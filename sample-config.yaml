@@ -1,0 +1,28 @@
+# run-for-seconds: 5
+
+# db connection
+driver: mysql
+dsn: USER:PASSWORD@tcp(MYSQL_ADDRESS:MYSQL_PORT)/MYSQL_SCHEMA
+
+# tuning the throughput mechanism
+check-every-seconds: 1.0
+growth-factor: 0.5
+max-connection-delta: 10
+avg-samples: 3
+
+# the actual queries to run against the db
+queries:
+
+- rate-per-second: 300
+  max-connections: 200
+  sleep: 10ms
+  commands: 
+  - |
+    select * from table where id = 1
+
+- rate-per-second: 100
+  max-connections: 200
+  sleep: 10ms
+  commands: 
+  - |
+    replace into table (id, value) values (1, 'foo')
