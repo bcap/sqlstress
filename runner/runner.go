@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +64,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	maxAdjustment := r.config.MaxConnectionDelta
 	averages := make([]float64, len(r.config.Queries))
 	throughputs := make([]int32, len(r.config.Queries))
+	adjustEvery := uint64(r.config.AdjustConnectionsEveryXChecks)
+
+	var checks uint64
 
 	for {
 		// collect and reset current counters
@@ -68,6 +74,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			throughputs[idx] = r.throughput[idx].Load()
 			r.throughput[idx].Store(0)
 		}
+
+		// should this loop iteration adjust number of connections or not
+		shouldAdjust := r.config.AdjustConnectionsEveryXChecks == 0 || checks&adjustEvery == 0
 
 		// calculate averages and adjust runners
 		for idx := range r.config.Queries {
@@ -106,21 +115,26 @@ func (r *Runner) Run(ctx context.Context) error {
 
 			logProgress(idx, query, ratePerSecond, ratePerGoroutine, goroutines, target)
 
-			if target > 0 {
-				for i := 0; i < target; i++ {
-					childCtx, cancel := context.WithCancel(ctx)
-					r.cancels[idx] = append(r.cancels[idx], cancel)
-					go r.runQuery(childCtx, len(r.cancels[idx]), idx)
-				}
-			} else if target < 0 {
-				for i := 0; i < -target; i++ {
-					lastIdx := len(r.cancels[idx]) - 1
-					cancel := r.cancels[idx][lastIdx]
-					cancel()
-					r.cancels[idx] = r.cancels[idx][0:lastIdx]
+			if shouldAdjust {
+				if target > 0 {
+					for i := 0; i < target; i++ {
+						childCtx, cancel := context.WithCancel(ctx)
+						r.cancels[idx] = append(r.cancels[idx], cancel)
+						go r.runQuery(childCtx, len(r.cancels[idx]), idx)
+					}
+				} else if target < 0 {
+					for i := 0; i < -target; i++ {
+						lastIdx := len(r.cancels[idx]) - 1
+						cancel := r.cancels[idx][lastIdx]
+						cancel()
+						r.cancels[idx] = r.cancels[idx][0:lastIdx]
+					}
 				}
 			}
+
 		}
+
+		checks++
 
 		log.Print("------")
 
@@ -147,9 +161,25 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 	}()
 
 	query := r.config.Queries[queryID]
+	randomWeights := query.Variables.RandomWeights()
+
+	randomC := make(chan int64, 10)
+	go func() {
+		defer close(randomC)
+		random := rand.New(rand.NewSource(query.RandomSeed))
+		for {
+			select {
+			case randomC <- random.Int63():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	for {
 		for _, command := range query.Commands {
+			command = materializeCommand(command, query.Variables, randomWeights, randomC)
+
 			result, err := db.QueryContext(ctx, command)
 			if err == context.Canceled {
 				return nil
@@ -176,6 +206,67 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			}
 		}
 	}
+}
+
+var commandVarsCacheLock sync.RWMutex
+var commandVarsCache map[string][]string = map[string][]string{}
+
+func materializeCommand(command string, vars []config.QueryVar, randomWeights [][]int, randomSource <-chan int64) string {
+	// This uses a cache structure to avoid wasting time trying to do useless string replacements
+	commandVarsCacheLock.RLock()
+	varsUsed, hasOnCache := commandVarsCache[command]
+	commandVarsCacheLock.RUnlock()
+
+	// Check if we cached that the command does not use variable replacements. If so, do an early return
+	if hasOnCache && len(varsUsed) == 0 {
+		return command
+	}
+
+	// Pick the variable values to be used.
+	// Respect weighted randomization when there are multiple possible values for a var
+	values := map[string]string{}
+	for idx, queryVar := range vars {
+		// query var has only one possible value defined directly on the Value property
+		if queryVar.Value != "" {
+			values[queryVar.Key] = queryVar.Value
+			continue
+		}
+		// query var has only one possible value defined as an array of values with a single item
+		if len(queryVar.Values) == 1 {
+			values[queryVar.Key] = queryVar.Values[0].Value
+			continue
+		}
+
+		// query var has multiple possible values. Lets pick at random while respecting the weighted random mechanism
+		varWeightIdx := randomWeights[idx]
+		rand64 := <-randomSource
+		randIdx := int(rand64 % int64(len(varWeightIdx)))
+		chosenIdx := varWeightIdx[randIdx]
+		chosen := queryVar.Values[chosenIdx]
+		values[queryVar.Key] = chosen.Value
+	}
+
+	if hasOnCache {
+		for _, key := range varsUsed {
+			value := values[key]
+			command = strings.ReplaceAll(command, "{{"+key+"}}", value)
+		}
+	} else {
+		varsUsed := []string{}
+		for key, value := range values {
+			templateKey := "{{" + key + "}}"
+			if !strings.Contains(command, templateKey) {
+				continue
+			}
+			command = strings.ReplaceAll(command, templateKey, value)
+			varsUsed = append(varsUsed, key)
+		}
+		commandVarsCacheLock.Lock()
+		commandVarsCache[command] = varsUsed
+		commandVarsCacheLock.Unlock()
+	}
+
+	return command
 }
 
 func openDB(ctx context.Context, driver string, dsn string) (*sql.DB, error) {

@@ -17,14 +17,15 @@ var Default = Config{
 }
 
 type Config struct {
-	Driver             string  `yaml:"driver"`
-	DSN                string  `yaml:"dsn"`
-	RunForSeconds      int64   `yaml:"run-for-seconds"`
-	Queries            []Query `yaml:"queries"`
-	CheckEverySeconds  float64 `yaml:"check-every-seconds"`
-	AverageSamples     int     `yaml:"avg-samples"`
-	GrowthFactor       float64 `yaml:"growth-factor"`
-	MaxConnectionDelta int     `yaml:"max-connection-delta"`
+	Driver                        string  `yaml:"driver"`
+	DSN                           string  `yaml:"dsn"`
+	RunForSeconds                 int64   `yaml:"run-for-seconds"`
+	Queries                       []Query `yaml:"queries"`
+	CheckEverySeconds             float64 `yaml:"check-every-x-seconds"`
+	AdjustConnectionsEveryXChecks int64   `yaml:"adjust-connections-on-every-x-checks"`
+	AverageSamples                int     `yaml:"avg-samples"`
+	GrowthFactor                  float64 `yaml:"growth-factor"`
+	MaxConnectionDelta            int     `yaml:"max-connection-delta"`
 }
 
 type Query struct {
@@ -33,6 +34,21 @@ type Query struct {
 	MaxConnections int           `yaml:"max-connections"`
 	Commands       []string      `yaml:"commands"`
 	Sleep          time.Duration `yaml:"sleep"`
+	Variables      QueryVars     `yaml:"vars"`
+	RandomSeed     int64         `yaml:"random-seed"`
+}
+
+type QueryVars []QueryVar
+
+type QueryVar struct {
+	Key    string          `yaml:"key"`
+	Value  string          `yaml:"value"`
+	Values []QueryVarValue `yaml:"values"`
+}
+
+type QueryVarValue struct {
+	Value  string `yaml:"value"`
+	Weight int    `yaml:"weight"`
 }
 
 func (c *Config) Print(w io.Writer) error {
@@ -75,7 +91,53 @@ func (q Query) Validate() error {
 		}
 	}
 
+	seen := map[string]struct{}{}
+	for idx, variable := range q.Variables {
+		if variable.Key == "" {
+			return fmt.Errorf("query variable #%d has no key", idx)
+		}
+		if _, ok := seen[variable.Key]; ok {
+			return fmt.Errorf("query variable #%d uses key %s which is already defined", idx, variable.Key)
+		}
+		seen[variable.Key] = struct{}{}
+
+		if variable.Value != "" && len(variable.Values) > 0 {
+			return fmt.Errorf("query variable #%d specified voth \"value\" and \"values\", but only one of them is allowed", idx)
+		}
+
+		for vIdx, value := range variable.Values {
+			if value.Weight < 0 {
+				return fmt.Errorf("query variable #%d value #%d has invalid weight of %d", idx, vIdx, value.Weight)
+			}
+		}
+	}
+
 	return nil
+}
+
+func (v QueryVars) RandomWeights() [][]int {
+	result := make([][]int, len(v))
+	for idx, qVar := range v {
+		result[idx] = qVar.RandomWeights()
+	}
+	return result
+}
+
+func (v QueryVar) RandomWeights() []int {
+	if v.Value != "" {
+		return nil
+	}
+	result := make([]int, 0, len(v.Values))
+	for idx, value := range v.Values {
+		weight := value.Weight
+		if weight == 0 {
+			weight = 1
+		}
+		for i := 0; i < weight; i++ {
+			result = append(result, idx)
+		}
+	}
+	return result
 }
 
 func Parse(ctx context.Context, reader io.Reader, config *Config) error {
@@ -84,16 +146,15 @@ func Parse(ctx context.Context, reader io.Reader, config *Config) error {
 	doneC := make(chan struct{})
 
 	go func() {
-		decoder := yaml.NewDecoder(reader)
-		err = decoder.Decode(config)
+		err = yaml.NewDecoder(reader).Decode(config)
 		close(doneC)
 	}()
 
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
 	case <-doneC:
 		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
