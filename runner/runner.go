@@ -22,9 +22,10 @@ var yellow = color.New(color.FgYellow).SprintFunc()
 var red = color.New(color.FgRed).SprintFunc()
 
 type Runner struct {
-	config     config.Config
-	throughput []*atomic.Int32
-	cancels    [][]context.CancelFunc
+	config            config.Config
+	throughput        []*atomic.Int32
+	cancels           [][]context.CancelFunc
+	activeConnections atomic.Int32
 }
 
 func New(config config.Config) *Runner {
@@ -97,8 +98,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			ratePerGoroutine := 0.0
 			goroutines := len(r.cancels[idx])
 			if goroutines > 0 {
-				ratePerGoroutine = ratePerSecond / float64(goroutines)
-				goroutinesAdjustment = deltaRate / ratePerGoroutine * growthFactor
+				if r.activeConnections.Load() > 0 {
+					ratePerGoroutine = ratePerSecond / float64(goroutines)
+					goroutinesAdjustment = deltaRate / ratePerGoroutine * growthFactor
+				} else {
+					// If we have goroutines up but no connections working, we may be having a temporary issue with the db
+					// Avoid trying to keep increasing number of goroutines in this case
+					goroutinesAdjustment = float64(goroutines)
+				}
 			}
 
 			target := int(math.Round(goroutinesAdjustment))
@@ -155,8 +162,12 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 		return err
 	}
 
+	connected := true
+	r.activeConnections.Add(1)
+
 	defer func() {
 		// log.Printf("query runner #%d-%d stopped", queryID, id)
+		r.activeConnections.Add(-1)
 		db.Close()
 	}()
 
@@ -184,8 +195,24 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			if err == context.Canceled {
 				return nil
 			} else if err != nil {
-				log.Printf("! query runner #%d-%d got an error while issuing a query: %v", queryID, id, err)
-				return err
+				log.Printf("! query runner #%d-%d got an error while issuing a query: %v. Rebuilding connection in 200ms", queryID, id, err)
+				if connected {
+					r.activeConnections.Add(-1)
+					connected = false
+				}
+				select {
+				case <-time.After(200 * time.Millisecond):
+				case <-ctx.Done():
+					return nil
+				}
+				newDb, err := openDB(ctx, r.config.Driver, r.config.DSN)
+				if err == nil {
+					db.Close()
+					db = newDb
+					connected = true
+					r.activeConnections.Add(1)
+				}
+				continue
 			}
 
 			// consume all records
