@@ -24,18 +24,22 @@ var red = color.New(color.FgRed).SprintFunc()
 type Runner struct {
 	config            config.Config
 	throughput        []*atomic.Int32
+	latency           []*atomic.Int64
 	cancels           [][]context.CancelFunc
 	activeConnections atomic.Int32
 }
 
 func New(config config.Config) *Runner {
 	throughputs := make([]*atomic.Int32, len(config.Queries))
+	latency := make([]*atomic.Int64, len(config.Queries))
 	for idx := range throughputs {
 		throughputs[idx] = &atomic.Int32{}
+		latency[idx] = &atomic.Int64{}
 	}
 	return &Runner{
 		config:     config,
 		throughput: throughputs,
+		latency:    latency,
 		cancels:    make([][]context.CancelFunc, len(config.Queries)),
 	}
 }
@@ -67,6 +71,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	maxAdjustment := r.config.MaxConnectionDelta
 	averages := make([]float64, len(r.config.Queries))
 	throughputs := make([]int32, len(r.config.Queries))
+	latencies := make([]int64, len(r.config.Queries))
 	adjustEvery := uint64(r.config.AdjustConnectionsEveryXChecks)
 
 	var checks uint64
@@ -75,7 +80,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		// collect and reset current counters
 		for idx := range r.config.Queries {
 			throughputs[idx] = r.throughput[idx].Load()
+			latencies[idx] = r.latency[idx].Load()
 			r.throughput[idx].Store(0)
+			r.latency[idx].Store(0)
 		}
 
 		// should this loop iteration adjust number of connections or not
@@ -122,12 +129,8 @@ func (r *Runner) Run(ctx context.Context) error {
 				target = query.MaxConnections - goroutines
 			}
 
-			// // do not try to adjust back to negative amount of connections
-			if target < goroutines {
-				target = -(goroutines - 1)
-			}
-
-			logProgress(idx, query, ratePerSecond, ratePerGoroutine, goroutines, target)
+			avgLatency := float64(latencies[idx]) / throughput
+			logProgress(idx, query, ratePerSecond, ratePerGoroutine, avgLatency, goroutines, target)
 
 			if shouldAdjust {
 				if target > 0 {
@@ -217,6 +220,8 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 		for _, command := range query.Commands {
 			command = materializeCommand(command, query.Variables, randomWeights, randomC)
 
+			start := time.Now()
+
 			result, err := db.QueryContext(ctx, command)
 			if errors.Is(err, context.Canceled) {
 				return nil
@@ -235,6 +240,8 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			for result.Next() {
 			}
 			result.Close()
+
+			r.latency[queryID].Add(time.Since(start).Nanoseconds())
 			r.throughput[queryID].Add(1)
 
 			if query.Sleep > 0 {
@@ -266,7 +273,7 @@ func openDB(ctx context.Context, driver string, dsn string) (*sql.DB, error) {
 	}
 }
 
-func logProgress(idx int, query config.Query, actualRate float64, ratePerConnection float64, connections int, connectionTarget int) {
+func logProgress(idx int, query config.Query, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
 	// rate coloring
 	desiredRate := query.Rate()
 	actualRateS := fmt.Sprintf("%.1f", actualRate)
@@ -286,7 +293,7 @@ func logProgress(idx int, query config.Query, actualRate float64, ratePerConnect
 	}
 
 	log.Infof(
-		"Query #%d: %s/s (%.1f/s), avg rate per connection: %0.1f/s, connections: %d (%+d%s), ",
-		idx, actualRateS, desiredRate, ratePerConnection, connections, connectionTarget, limitMsg,
+		"Query #%d: %s/s (%.1f/s), avg rate per connection: %0.1f/s, avg latency: %0.1fms, connections: %d (%+d%s)",
+		idx, actualRateS, desiredRate, ratePerConnection, avgLatency/float64(time.Millisecond), connections, connectionTarget, limitMsg,
 	)
 }
