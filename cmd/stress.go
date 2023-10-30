@@ -7,13 +7,16 @@ import (
 	"os"
 
 	"github.com/alexflint/go-arg"
+
 	"github.com/bcap/sqlstress/config"
+	"github.com/bcap/sqlstress/log"
 	"github.com/bcap/sqlstress/runner"
 )
 
 type Args struct {
 	Config        string `arg:"-c,--config"`
 	ExampleConfig bool   `arg:"--example-config"`
+	Verbose       bool   `arg:"-v,--verbose"`
 }
 
 func main() {
@@ -26,6 +29,11 @@ func main() {
 	} else if args.Config == "" {
 		fmt.Fprintf(os.Stderr, "--config or --example-config need to be passed\n")
 		os.Exit(1)
+	}
+
+	log.Level = log.InfoLevel
+	if args.Verbose {
+		log.Level = log.DebugLevel
 	}
 
 	cfg := config.Default

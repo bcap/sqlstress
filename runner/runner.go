@@ -3,8 +3,8 @@ package runner
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"log"
 	"math"
 	"math/rand"
 	"strings"
@@ -12,10 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bcap/sqlstress/config"
 	"github.com/fatih/color"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
+
+	"github.com/bcap/sqlstress/config"
+	"github.com/bcap/sqlstress/log"
 )
 
 var yellow = color.New(color.FgYellow).SprintFunc()
@@ -50,11 +52,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer cancel()
 	}
 
-	log.Printf("This execution will run %s", durationMsg)
+	log.Infof("This execution will run %s", durationMsg)
 
-	log.Printf("Using the following configuration (full dump):")
-	r.config.Print(log.Writer())
-	log.Print("------")
+	log.Infof("Using the following configuration (full dump):")
+	if log.Level >= log.InfoLevel {
+		r.config.Print(log.InfoLogger.Writer())
+	}
+	log.Infof("------")
 
 	ticker := time.NewTicker(time.Duration(r.config.CheckEverySeconds * float64(time.Second)))
 	defer ticker.Stop()
@@ -104,7 +108,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				} else {
 					// If we have goroutines up but no connections working, we may be having a temporary issue with the db
 					// Avoid trying to keep increasing number of goroutines in this case
-					goroutinesAdjustment = float64(goroutines)
+					goroutinesAdjustment = 0
 				}
 			}
 
@@ -118,6 +122,11 @@ func (r *Runner) Run(ctx context.Context) error {
 			// do not try to use more connections when we reach the max amount allowed
 			if query.MaxConnections > 0 && target > 0 && goroutines+target > query.MaxConnections {
 				target = query.MaxConnections - goroutines
+			}
+
+			// // do not try to adjust back to negative amount of connections
+			if target < goroutines {
+				target = -(goroutines - 1)
 			}
 
 			logProgress(idx, query, ratePerSecond, ratePerGoroutine, goroutines, target)
@@ -143,7 +152,7 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		checks++
 
-		log.Print("------")
+		log.Infof("------")
 
 		// wait next tick
 		select {
@@ -155,8 +164,6 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
-	// log.Printf("starting query runner #%d-%d", queryID, id)
-
 	db, err := openDB(ctx, r.config.Driver, r.config.DSN)
 	if err != nil {
 		return err
@@ -164,12 +171,33 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 
 	connected := true
 	r.activeConnections.Add(1)
+	log.Debugf("query runner #%d-%d connected", queryID, id)
 
 	defer func() {
-		// log.Printf("query runner #%d-%d stopped", queryID, id)
 		r.activeConnections.Add(-1)
 		db.Close()
+		log.Debugf("query runner #%d-%d stopped", queryID, id)
 	}()
+
+	rebuildConn := func(sleepFor time.Duration) {
+		if connected {
+			r.activeConnections.Add(-1)
+			connected = false
+		}
+		select {
+		case <-time.After(sleepFor):
+		case <-ctx.Done():
+			return
+		}
+		newDb, err := openDB(ctx, r.config.Driver, r.config.DSN)
+		if err == nil {
+			db.Close()
+			db = newDb
+			connected = true
+			r.activeConnections.Add(1)
+			log.Debugf("query runner #%d-%d re-connected", queryID, id)
+		}
+	}
 
 	query := r.config.Queries[queryID]
 	randomWeights := query.Variables.RandomWeights()
@@ -192,32 +220,19 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			command = materializeCommand(command, query.Variables, randomWeights, randomC)
 
 			result, err := db.QueryContext(ctx, command)
-			if err == context.Canceled {
+			if errors.Is(err, context.Canceled) {
 				return nil
 			} else if err != nil {
-				log.Printf("! query runner #%d-%d got an error while issuing a query: %v. Rebuilding connection in 200ms", queryID, id, err)
-				if connected {
-					r.activeConnections.Add(-1)
-					connected = false
-				}
-				select {
-				case <-time.After(200 * time.Millisecond):
-				case <-ctx.Done():
-					return nil
-				}
-				newDb, err := openDB(ctx, r.config.Driver, r.config.DSN)
-				if err == nil {
-					db.Close()
-					db = newDb
-					connected = true
-					r.activeConnections.Add(1)
-				}
+				log.Warnf("query runner #%d-%d got an error while issuing a query: %v. Rebuilding connection in 200ms", queryID, id, err)
+				rebuildConn(200 * time.Millisecond)
 				continue
 			}
 
 			// consume all records
 			if _, err := result.Columns(); err != nil {
-				log.Printf("! query runner #%d-%d got an error while reading query results: %v", queryID, id, err)
+				log.Warnf("query runner #%d-%d got an error while reading query results: %v. Rebuilding connection in 200ms", queryID, id, err)
+				rebuildConn(200 * time.Millisecond)
+				continue
 			}
 			for result.Next() {
 			}
@@ -333,7 +348,7 @@ func logProgress(idx int, query config.Query, actualRate float64, ratePerConnect
 		limitMsg = ", " + red("reached max")
 	}
 
-	log.Printf(
+	log.Infof(
 		"Query #%d: %s/s (%.1f/s), avg rate per connection: %0.1f/s, connections: %d (%+d%s), ",
 		idx, actualRateS, desiredRate, ratePerConnection, connections, connectionTarget, limitMsg,
 	)
