@@ -21,7 +21,7 @@ type Config struct {
 	DSN                           string   `yaml:"dsn"`
 	RunForSeconds                 int64    `yaml:"run-for-seconds"`
 	Setup                         []string `yaml:"setup"`
-	TearDown                      []string `yaml:"tear-down"`
+	TearDown                      []string `yaml:"teardown"`
 	Queries                       []Query  `yaml:"queries"`
 	CheckEverySeconds             float64  `yaml:"check-every-x-seconds"`
 	AdjustConnectionsEveryXChecks int64    `yaml:"adjust-connections-on-every-x-checks"`

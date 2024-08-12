@@ -65,6 +65,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	if len(r.config.TearDown) > 0 {
 		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
 			log.Infof("Running %d tear down commands", len(r.config.TearDown))
 			db, err := openDB(ctx, r.config.Driver, r.config.DSN)
 			if err != nil {
@@ -72,12 +75,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				return
 			}
 			defer db.Close()
-			for _, command := range r.config.Setup {
+			for _, command := range r.config.TearDown {
 				_, err := db.ExecContext(ctx, command)
 				if err != nil {
 					log.Errorf("Error running tear down command, skipping: %v", err)
 				}
 			}
+			log.Info("Tear down done")
 		}()
 	}
 
@@ -94,6 +98,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 		}
+		log.Info("Setup done")
 	}
 
 	if r.config.IdleConnections > 0 {

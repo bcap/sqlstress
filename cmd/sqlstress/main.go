@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"github.com/alexflint/go-arg"
 
@@ -40,9 +43,23 @@ func main() {
 	err := config.ParseFilePath(context.Background(), args.Config, &cfg)
 	panicOnErr(err)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		// We reset signal notifications and go back to default behavior
+		// This means that a second signal will now kill the application
+		signal.Reset()
+		log.Warnf("Received %s signal, shutting down", strings.ToUpper(sig.String()))
+		cancel()
+	}()
+
 	rn := runner.New(cfg)
-	err = rn.Run(context.Background())
-	if !errors.Is(err, context.DeadlineExceeded) {
+	err = rn.Run(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		panicOnErr(err)
 	}
 }
