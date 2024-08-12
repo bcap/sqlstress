@@ -17,16 +17,18 @@ var Default = Config{
 }
 
 type Config struct {
-	Driver                        string  `yaml:"driver"`
-	DSN                           string  `yaml:"dsn"`
-	RunForSeconds                 int64   `yaml:"run-for-seconds"`
-	Queries                       []Query `yaml:"queries"`
-	CheckEverySeconds             float64 `yaml:"check-every-x-seconds"`
-	AdjustConnectionsEveryXChecks int64   `yaml:"adjust-connections-on-every-x-checks"`
-	AverageSamples                int     `yaml:"avg-samples"`
-	GrowthFactor                  float64 `yaml:"growth-factor"`
-	MaxConnectionDelta            int     `yaml:"max-connection-delta"`
-	IdleConnections               int     `yaml:"idle-connections"`
+	Driver                        string   `yaml:"driver"`
+	DSN                           string   `yaml:"dsn"`
+	RunForSeconds                 int64    `yaml:"run-for-seconds"`
+	Setup                         []string `yaml:"setup"`
+	TearDown                      []string `yaml:"tear-down"`
+	Queries                       []Query  `yaml:"queries"`
+	CheckEverySeconds             float64  `yaml:"check-every-x-seconds"`
+	AdjustConnectionsEveryXChecks int64    `yaml:"adjust-connections-on-every-x-checks"`
+	AverageSamples                int      `yaml:"avg-samples"`
+	GrowthFactor                  float64  `yaml:"growth-factor"`
+	MaxConnectionDelta            int      `yaml:"max-connection-delta"`
+	IdleConnections               int      `yaml:"idle-connections"`
 }
 
 type Query struct {

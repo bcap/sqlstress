@@ -60,7 +60,41 @@ func (r *Runner) Run(ctx context.Context) error {
 	if log.Level >= log.InfoLevel {
 		r.config.Print(log.InfoLogger.Writer())
 	}
+
 	log.Infof("------")
+
+	if len(r.config.TearDown) > 0 {
+		defer func() {
+			log.Infof("Running %d tear down commands", len(r.config.TearDown))
+			db, err := openDB(ctx, r.config.Driver, r.config.DSN)
+			if err != nil {
+				log.Errorf("Error opening db connection for running tear down commands: %v", err)
+				return
+			}
+			defer db.Close()
+			for _, command := range r.config.Setup {
+				_, err := db.ExecContext(ctx, command)
+				if err != nil {
+					log.Errorf("Error running tear down command, skipping: %v", err)
+				}
+			}
+		}()
+	}
+
+	if len(r.config.Setup) > 0 {
+		log.Infof("Running %d setup commands", len(r.config.Setup))
+		db, err := openDB(ctx, r.config.Driver, r.config.DSN)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		for _, command := range r.config.Setup {
+			_, err := db.ExecContext(ctx, command)
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	if r.config.IdleConnections > 0 {
 		log.Debugf("opening %d idle connections", r.config.IdleConnections)
