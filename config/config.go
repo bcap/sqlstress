@@ -26,6 +26,7 @@ type Config struct {
 	AverageSamples                int     `yaml:"avg-samples"`
 	GrowthFactor                  float64 `yaml:"growth-factor"`
 	MaxConnectionDelta            int     `yaml:"max-connection-delta"`
+	IdleConnections               int     `yaml:"idle-connections"`
 }
 
 type Query struct {

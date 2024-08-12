@@ -62,6 +62,27 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	log.Infof("------")
 
+	if r.config.IdleConnections > 0 {
+		log.Debugf("opening %d idle connections", r.config.IdleConnections)
+
+		iddleConns := make([]*sql.DB, r.config.IdleConnections)
+		for i := 0; i < r.config.IdleConnections; i++ {
+			db, err := openDB(ctx, r.config.Driver, r.config.DSN)
+			if err != nil {
+				return err
+			}
+			iddleConns[i] = db
+		}
+		log.Infof("Opened %d idle connections", r.config.IdleConnections)
+
+		defer func() {
+			log.Debugf("closing %d idle connections", r.config.IdleConnections)
+			for _, conn := range iddleConns {
+				conn.Close()
+			}
+		}()
+	}
+
 	ticker := time.NewTicker(time.Duration(r.config.CheckEverySeconds * float64(time.Second)))
 	defer ticker.Stop()
 
