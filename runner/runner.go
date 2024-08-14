@@ -122,6 +122,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		}()
 	}
 
+	log.Infof("------")
+
 	ticker := time.NewTicker(time.Duration(r.config.CheckEverySeconds * float64(time.Second)))
 	defer ticker.Stop()
 
