@@ -10,6 +10,9 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const DefaultConnectTimeout = 5 * time.Second
+const DefaultReadTimeout = 10 * time.Second
+
 var Default = Config{
 	AverageSamples:     5,
 	GrowthFactor:       0.8,
@@ -17,25 +20,36 @@ var Default = Config{
 }
 
 type Config struct {
-	Driver                        string   `yaml:"driver"`
-	DSN                           string   `yaml:"dsn"`
-	RunForSeconds                 int64    `yaml:"run-for-seconds"`
-	Setup                         []string `yaml:"setup"`
-	TearDown                      []string `yaml:"teardown"`
-	Queries                       []Query  `yaml:"queries"`
-	CheckEverySeconds             float64  `yaml:"check-every-x-seconds"`
-	AdjustConnectionsEveryXChecks int64    `yaml:"adjust-connections-on-every-x-checks"`
-	AverageSamples                int      `yaml:"avg-samples"`
-	GrowthFactor                  float64  `yaml:"growth-factor"`
-	MaxConnectionDelta            int      `yaml:"max-connection-delta"`
-	IdleConnections               int      `yaml:"idle-connections"`
+	Driver                        string            `yaml:"driver"`
+	ConnectionStrings             map[string]string `yaml:"connection-strings"`
+	RunForSeconds                 int64             `yaml:"run-for-seconds"`
+	Setup                         []Query           `yaml:"setup"`
+	TearDown                      []Query           `yaml:"teardown"`
+	Queries                       []LoadQuery       `yaml:"queries"`
+	CheckEverySeconds             float64           `yaml:"check-every-x-seconds"`
+	AdjustConnectionsEveryXChecks int64             `yaml:"adjust-connections-on-every-x-checks"`
+	AverageSamples                int               `yaml:"avg-samples"`
+	GrowthFactor                  float64           `yaml:"growth-factor"`
+	MaxConnectionDelta            int               `yaml:"max-connection-delta"`
+	IdleConnections               []IdleConnection  `yaml:"idle-connections"`
 }
 
+type ConnectionConfig struct {
+	Connection     string        `yaml:"connection"`
+	ConnectTimeout time.Duration `yaml:"connect-timeout"`
+}
 type Query struct {
+	ConnectionConfig `yaml:",inline"`
+
+	ReadTimeout time.Duration `yaml:"read-timeout"`
+	Commands    []string      `yaml:"commands"`
+}
+type LoadQuery struct {
+	Query `yaml:",inline"`
+
 	RatePerSecond  float64       `yaml:"rate-per-second"`
 	RatePerMinute  float64       `yaml:"rate-per-minute"`
 	MaxConnections int           `yaml:"max-connections"`
-	Commands       []string      `yaml:"commands"`
 	Sleep          time.Duration `yaml:"sleep"`
 	Variables      QueryVars     `yaml:"vars"`
 	RandomSeed     int64         `yaml:"random-seed"`
@@ -54,20 +68,57 @@ type QueryVarValue struct {
 	Weight int    `yaml:"weight"`
 }
 
+type IdleConnection struct {
+	ConnectionConfig `yaml:",inline"`
+
+	Amount int `yaml:"amount"`
+}
+
 func (c *Config) Print(w io.Writer) error {
 	return yaml.NewEncoder(w).Encode(c)
 }
 
 func (c Config) Validate() error {
+	if len(c.ConnectionStrings) == 0 {
+		return fmt.Errorf("no connection strings defined")
+	}
+
+	for idx, setup := range c.Setup {
+		if setup.Connection == "" && c.ConnectionStrings["default"] == "" {
+			return fmt.Errorf("setup #%d has no connection reference and no \"default\" connection is defined in the connection strings", idx)
+		}
+		if setup.Connection != "" && c.ConnectionStrings[setup.Connection] == "" {
+			return fmt.Errorf("setup #%d connection reference %q is not defined in the connection strings", idx, setup.Connection)
+		}
+	}
+
+	for idx, tearDown := range c.TearDown {
+		if tearDown.Connection == "" && c.ConnectionStrings["default"] == "" {
+			return fmt.Errorf("tearDown #%d has no connection reference and no \"default\" connection is defined in the connection strings", idx)
+		}
+		if tearDown.Connection != "" && c.ConnectionStrings[tearDown.Connection] == "" {
+			return fmt.Errorf("tearDown #%d connection reference %q is not defined in the connection strings", idx, tearDown.Connection)
+		}
+	}
+
+	for idx, idle := range c.IdleConnections {
+		if idle.Connection == "" && c.ConnectionStrings["default"] == "" {
+			return fmt.Errorf("idle connection #%d has no connection reference and no \"default\" connection is defined in the connection strings", idx)
+		}
+		if idle.Connection != "" && c.ConnectionStrings[idle.Connection] == "" {
+			return fmt.Errorf("idle connection #%d connection reference %q is not defined in the connection strings", idx, idle.Connection)
+		}
+	}
+
 	for idx, query := range c.Queries {
-		if err := query.Validate(); err != nil {
+		if err := query.Validate(c); err != nil {
 			return fmt.Errorf("config query #%d is invalid: %w", idx, err)
 		}
 	}
 	return nil
 }
 
-func (q *Query) Rate() float64 {
+func (q *LoadQuery) Rate() float64 {
 	if q.RatePerSecond > 0 {
 		return q.RatePerSecond
 	} else {
@@ -75,7 +126,24 @@ func (q *Query) Rate() float64 {
 	}
 }
 
-func (q Query) Validate() error {
+func (q Query) Validate(config Config) error {
+	if q.Connection == "" {
+		if config.ConnectionStrings["default"] == "" {
+			return fmt.Errorf("query has no connection and no \"default\" connection is defined in the connection strings")
+		}
+	} else {
+		if _, ok := config.ConnectionStrings[q.Connection]; !ok {
+			return fmt.Errorf("query connection reference %q is not defined in the connection strings", q.Connection)
+		}
+	}
+	return nil
+}
+
+func (q LoadQuery) Validate(config Config) error {
+	if err := q.Query.Validate(config); err != nil {
+		return err
+	}
+
 	if q.RatePerMinute > 0 && q.RatePerSecond > 0 {
 		return fmt.Errorf("cannot specify both rate per second and rate per minute")
 	}
@@ -171,16 +239,49 @@ func ParseFilePath(ctx context.Context, filePath string, config *Config) error {
 
 func GenExample(writer io.Writer) error {
 	config := Config{
-		Driver:        "mysql",
-		DSN:           "user:password@tcp(localhost:3306)/database",
+		Driver: "mysql",
+		ConnectionStrings: map[string]string{
+			"default": "user:password@tcp(localhost:3306)/database",
+		},
 		RunForSeconds: 1,
-		Queries: []Query{
+		Setup: []Query{
+			{
+				ConnectionConfig: ConnectionConfig{
+					Connection: "default",
+				},
+				Commands: []string{
+					"create table if not exists test (id int primary key)",
+				},
+			},
+		},
+		TearDown: []Query{
+			{
+				ConnectionConfig: ConnectionConfig{
+					Connection: "default",
+				},
+				Commands: []string{
+					"drop table if exists test",
+				},
+			},
+		},
+		Queries: []LoadQuery{
 			{
 				RatePerSecond:  1,
 				MaxConnections: 10,
-				Commands: []string{
-					"select 1",
-					"select 2",
+				Query: Query{
+					Commands: []string{
+						"insert into test",
+					},
+				},
+			},
+			{
+				RatePerSecond:  10,
+				MaxConnections: 10,
+				Query: Query{
+					Commands: []string{
+						"select 1",
+						"select * from test",
+					},
 				},
 			},
 		},

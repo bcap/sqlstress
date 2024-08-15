@@ -63,60 +63,80 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	log.Infof("------")
 
-	if len(r.config.TearDown) > 0 {
+	numTearDownCommands := 0
+	for _, td := range r.config.TearDown {
+		numTearDownCommands += len(td.Commands)
+	}
+	if numTearDownCommands > 0 {
 		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer cancel()
+			log.Infof("Running %d tear down commands", numTearDownCommands)
 
-			log.Infof("Running %d tear down commands", len(r.config.TearDown))
-			db, err := openDB(ctx, r.config.Driver, r.config.DSN)
-			if err != nil {
-				log.Errorf("Error opening db connection for running tear down commands: %v", err)
-				return
-			}
-			defer db.Close()
-			for _, command := range r.config.TearDown {
-				_, err := db.ExecContext(ctx, command)
+			for _, td := range r.config.TearDown {
+				db, err := r.openDB(ctx, td.ConnectionConfig)
 				if err != nil {
-					log.Errorf("Error running tear down command, skipping: %v", err)
+					log.Errorf("Error opening db connection for running tear down commands: %v", err)
+					return
+				}
+				defer db.Close()
+				for _, command := range td.Commands {
+					_, err := dbExec(ctx, db, command, td.ReadTimeout)
+					if err != nil {
+						log.Errorf("Error running tear down command, skipping: %v", err)
+					}
 				}
 			}
 			log.Info("Tear down done")
 		}()
 	}
 
-	if len(r.config.Setup) > 0 {
-		log.Infof("Running %d setup commands", len(r.config.Setup))
-		db, err := openDB(ctx, r.config.Driver, r.config.DSN)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-		for _, command := range r.config.Setup {
-			_, err := db.ExecContext(ctx, command)
+	numSetupCommands := 0
+	for _, td := range r.config.Setup {
+		numSetupCommands += len(td.Commands)
+	}
+	if numSetupCommands > 0 {
+		log.Infof("Running %d setup commands", numSetupCommands)
+		for _, setup := range r.config.Setup {
+			db, err := r.openDB(ctx, setup.ConnectionConfig)
 			if err != nil {
 				return err
+			}
+			defer db.Close()
+			for _, command := range setup.Commands {
+				_, err := dbExec(ctx, db, command, setup.ReadTimeout)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		log.Info("Setup done")
 	}
 
-	if r.config.IdleConnections > 0 {
-		log.Debugf("opening %d idle connections", r.config.IdleConnections)
-
-		iddleConns := make([]*sql.DB, r.config.IdleConnections)
-		for i := 0; i < r.config.IdleConnections; i++ {
-			db, err := openDB(ctx, r.config.Driver, r.config.DSN)
-			if err != nil {
-				return err
-			}
-			iddleConns[i] = db
+	totalIdle := 0
+	for _, idle := range r.config.IdleConnections {
+		if idle.Amount > 0 {
+			totalIdle += idle.Amount
 		}
-		log.Infof("Opened %d idle connections", r.config.IdleConnections)
+	}
+	if totalIdle > 0 {
+		log.Debugf("opening %d idle connections", totalIdle)
+
+		idleConns := make([]*sql.DB, totalIdle)
+		for _, idle := range r.config.IdleConnections {
+			for i := 0; i < idle.Amount; i++ {
+				db, err := r.openDB(ctx, idle.ConnectionConfig)
+				if err != nil {
+					return err
+				}
+				idleConns[i] = db
+			}
+		}
+		log.Infof("Opened %d idle connections", totalIdle)
 
 		defer func() {
-			log.Debugf("closing %d idle connections", r.config.IdleConnections)
-			for _, conn := range iddleConns {
+			log.Debugf("closing %d idle connections", totalIdle)
+			for _, conn := range idleConns {
 				conn.Close()
 			}
 		}()
@@ -227,7 +247,9 @@ func (r *Runner) Run(ctx context.Context) error {
 }
 
 func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
-	db, err := openDB(ctx, r.config.Driver, r.config.DSN)
+	query := r.config.Queries[queryID]
+
+	db, err := r.openDB(ctx, query.ConnectionConfig)
 	if err != nil {
 		return err
 	}
@@ -252,7 +274,7 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 		case <-ctx.Done():
 			return
 		}
-		newDb, err := openDB(ctx, r.config.Driver, r.config.DSN)
+		newDb, err := r.openDB(ctx, query.ConnectionConfig)
 		if err == nil {
 			db.Close()
 			db = newDb
@@ -262,7 +284,6 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 		}
 	}
 
-	query := r.config.Queries[queryID]
 	randomWeights := query.Variables.RandomWeights()
 
 	randomC := make(chan int64, 10)
@@ -284,12 +305,20 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 
 			start := time.Now()
 
-			result, err := db.QueryContext(ctx, command)
+			queryCtx := ctx
+			var queryCtxCancel context.CancelFunc
+			if query.ReadTimeout > 0 {
+				queryCtx, queryCtxCancel = context.WithTimeout(ctx, query.ReadTimeout)
+			}
+			defer queryCtxCancel()
+
+			result, err := db.QueryContext(queryCtx, command)
 			if errors.Is(err, context.Canceled) {
 				return nil
 			} else if err != nil {
 				log.Warnf("query runner #%d-%d got an error while issuing a query: %v. Rebuilding connection in 200ms", queryID, id, err)
 				rebuildConn(200 * time.Millisecond)
+				queryCtxCancel()
 				continue
 			}
 
@@ -297,11 +326,13 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			if _, err := result.Columns(); err != nil {
 				log.Warnf("query runner #%d-%d got an error while reading query results: %v. Rebuilding connection in 200ms", queryID, id, err)
 				rebuildConn(200 * time.Millisecond)
+				queryCtxCancel()
 				continue
 			}
 			for result.Next() {
 			}
 			result.Close()
+			queryCtxCancel()
 
 			r.latency[queryID].Add(time.Since(start).Nanoseconds())
 			r.throughput[queryID].Add(1)
@@ -315,6 +346,22 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 			}
 		}
 	}
+}
+
+func (r *Runner) openDB(ctx context.Context, connCfg config.ConnectionConfig) (*sql.DB, error) {
+	timeout := config.DefaultConnectTimeout
+	if connCfg.ConnectTimeout > 0 {
+		timeout = connCfg.ConnectTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	connStr := r.config.ConnectionStrings["default"]
+	if connCfg.Connection != "" {
+		connStr = r.config.ConnectionStrings[connCfg.Connection]
+	}
+
+	return openDB(ctx, r.config.Driver, connStr)
 }
 
 func openDB(ctx context.Context, driver string, dsn string) (*sql.DB, error) {
@@ -335,12 +382,21 @@ func openDB(ctx context.Context, driver string, dsn string) (*sql.DB, error) {
 	}
 }
 
-func logProgress(idx int, query config.Query, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
+func dbExec(ctx context.Context, db *sql.DB, command string, readTimeout time.Duration) (sql.Result, error) {
+	if readTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, readTimeout)
+		defer cancel()
+	}
+	return db.ExecContext(ctx, command)
+}
+
+func logProgress(idx int, query config.LoadQuery, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
 	// rate coloring
 	desiredRate := query.Rate()
 	actualRateS := fmt.Sprintf("%.1f", actualRate)
 	at := actualRate / desiredRate
-	atRed := 0.2     // display it in red if we are more than 20% off the target, above or below
+	atRed := 0.20    // display it in red if we are more than 20% off the target, above or below
 	atYellow := 0.05 // display it in yellow if we are more than 5% off the target, above or below
 	if at < 1-atRed || at > 1+atRed {
 		actualRateS = red(actualRateS)
