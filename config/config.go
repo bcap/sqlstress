@@ -14,24 +14,38 @@ const DefaultConnectTimeout = 5 * time.Second
 const DefaultReadTimeout = 10 * time.Second
 
 var Default = Config{
-	AverageSamples:     5,
-	GrowthFactor:       0.8,
-	MaxConnectionDelta: 1,
+	AverageSamples:         5,
+	GrowthFactor:           0.8,
+	MaxConnectionDelta:     1,
+	RebuildConnWait:        200 * time.Millisecond,
+	RebuildConnSplay:       100 * time.Millisecond,
+	IdleConnMaxParallelism: 10,
+	IdleConnKeepAlive:      10 * time.Second,
+	IdleConnKeepAliveSplay: 5 * time.Second,
 }
 
 type Config struct {
-	Driver                        string            `yaml:"driver"`
-	ConnectionStrings             map[string]string `yaml:"connection-strings"`
-	RunForSeconds                 int64             `yaml:"run-for-seconds"`
-	Setup                         []Query           `yaml:"setup"`
-	TearDown                      []Query           `yaml:"teardown"`
-	Queries                       []LoadQuery       `yaml:"queries"`
-	CheckEverySeconds             float64           `yaml:"check-every-x-seconds"`
-	AdjustConnectionsEveryXChecks int64             `yaml:"adjust-connections-on-every-x-checks"`
-	AverageSamples                int               `yaml:"avg-samples"`
-	GrowthFactor                  float64           `yaml:"growth-factor"`
-	MaxConnectionDelta            int               `yaml:"max-connection-delta"`
-	IdleConnections               []IdleConnection  `yaml:"idle-connections"`
+	RunForSeconds     int64             `yaml:"run-for-seconds"`
+	Driver            string            `yaml:"driver"`
+	ConnectionStrings map[string]string `yaml:"connection-strings"`
+	Setup             []Query           `yaml:"setup"`
+	TearDown          []Query           `yaml:"teardown"`
+	IdleConnections   []IdleConnection  `yaml:"idle-connections"`
+	Queries           []LoadQuery       `yaml:"queries"`
+
+	// variables to tune the sql load mechanism
+	CheckEverySeconds             float64 `yaml:"check-every-x-seconds"`
+	AdjustConnectionsEveryXChecks int64   `yaml:"adjust-connections-on-every-x-checks"`
+	AverageSamples                int     `yaml:"avg-samples"`
+	GrowthFactor                  float64 `yaml:"growth-factor"`
+	MaxConnectionDelta            int     `yaml:"max-connection-delta"`
+
+	// other tuneables
+	RebuildConnWait        time.Duration `yaml:"rebuild-connection-wait-time"`
+	RebuildConnSplay       time.Duration `yaml:"rebuild-connection-splay-time"`
+	IdleConnMaxParallelism int           `yaml:"idle-connection-max-parallelism"`
+	IdleConnKeepAlive      time.Duration `yaml:"idle-connection-keep-alive-wait-time`
+	IdleConnKeepAliveSplay time.Duration `yaml:"idle-connection-keep-alive-splay-time`
 }
 
 type ConnectionConfig struct {
