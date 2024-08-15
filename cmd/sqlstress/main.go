@@ -53,7 +53,7 @@ func main() {
 	defer cancel()
 
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGPIPE)
 	go func() {
 		sig := <-sigs
 		// We reset signal notifications and go back to default behavior
