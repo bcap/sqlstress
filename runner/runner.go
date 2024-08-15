@@ -63,87 +63,71 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	log.Infof("------")
 
-	numTearDownCommands := 0
-	for _, td := range r.config.TearDown {
-		numTearDownCommands += len(td.Commands)
-	}
-	if numTearDownCommands > 0 {
-		defer func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-			defer cancel()
-			log.Infof("Running %d tear down commands", numTearDownCommands)
+	// defer Teardown
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+		defer cancel()
+		r.TearDown(ctx)
+	}()
 
-			for _, td := range r.config.TearDown {
-				db, err := r.openDB(ctx, td.ConnectionConfig)
-				if err != nil {
-					log.Errorf("Error opening db connection for running tear down commands: %v", err)
-					return
-				}
-				defer db.Close()
-				for _, command := range td.Commands {
-					_, err := dbExec(ctx, db, command, td.ReadTimeout)
-					if err != nil {
-						log.Errorf("Error running tear down command, skipping: %v", err)
-					}
-				}
-			}
-			log.Info("Tear down done")
-		}()
+	// Do the setup
+	if err := r.Setup(ctx); err != nil {
+		return err
 	}
 
-	numSetupCommands := 0
-	for _, td := range r.config.Setup {
-		numSetupCommands += len(td.Commands)
+	// Open idle connections
+	idleConns, err := r.OpenIdle(ctx)
+	if err != nil {
+		return err
 	}
-	if numSetupCommands > 0 {
-		log.Infof("Running %d setup commands", numSetupCommands)
-		for _, setup := range r.config.Setup {
-			db, err := r.openDB(ctx, setup.ConnectionConfig)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-			for _, command := range setup.Commands {
-				_, err := dbExec(ctx, db, command, setup.ReadTimeout)
-				if err != nil {
-					return err
-				}
-			}
+	defer func() {
+		log.Debugf("closing %d idle connections", len(idleConns))
+		for _, conn := range idleConns {
+			conn.Close()
 		}
-		log.Info("Setup done")
-	}
+	}()
 
+	log.Infof("------")
+
+	// Stress the DB(s)
+	return r.Stress(ctx)
+}
+
+func (r *Runner) Setup(ctx context.Context) error {
+	return r.runQueriesSequential(ctx, r.config.Setup, "setup")
+}
+
+func (r *Runner) TearDown(ctx context.Context) error {
+	return r.runQueriesSequential(ctx, r.config.TearDown, "tear down")
+}
+
+func (r *Runner) OpenIdle(ctx context.Context) ([]*sql.DB, error) {
 	totalIdle := 0
 	for _, idle := range r.config.IdleConnections {
 		if idle.Amount > 0 {
 			totalIdle += idle.Amount
 		}
 	}
-	if totalIdle > 0 {
-		log.Debugf("opening %d idle connections", totalIdle)
-
-		idleConns := make([]*sql.DB, totalIdle)
-		for _, idle := range r.config.IdleConnections {
-			for i := 0; i < idle.Amount; i++ {
-				db, err := r.openDB(ctx, idle.ConnectionConfig)
-				if err != nil {
-					return err
-				}
-				idleConns[i] = db
-			}
-		}
-		log.Infof("Opened %d idle connections", totalIdle)
-
-		defer func() {
-			log.Debugf("closing %d idle connections", totalIdle)
-			for _, conn := range idleConns {
-				conn.Close()
-			}
-		}()
+	if totalIdle == 0 {
+		return []*sql.DB{}, nil
 	}
 
-	log.Infof("------")
+	log.Debugf("opening %d idle connections", totalIdle)
+	conns := make([]*sql.DB, totalIdle)
+	for _, idle := range r.config.IdleConnections {
+		for i := 0; i < idle.Amount; i++ {
+			db, err := r.openDB(ctx, idle.ConnectionConfig)
+			if err != nil {
+				return nil, err
+			}
+			conns[i] = db
+		}
+	}
+	log.Infof("Opened %d idle connections", totalIdle)
+	return conns, nil
+}
 
+func (r *Runner) Stress(ctx context.Context) error {
 	ticker := time.NewTicker(time.Duration(r.config.CheckEverySeconds * float64(time.Second)))
 	defer ticker.Stop()
 
@@ -244,6 +228,34 @@ func (r *Runner) Run(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+}
+
+func (r *Runner) runQueriesSequential(ctx context.Context, queries []config.Query, action string) error {
+	numCommands := 0
+	for _, q := range queries {
+		numCommands += len(q.Commands)
+	}
+	if numCommands == 0 {
+		return nil
+	}
+
+	log.Infof("Running %d %s commands", numCommands, action)
+	for idx1, query := range queries {
+		db, err := r.openDB(ctx, query.ConnectionConfig)
+		if err != nil {
+			log.Errorf("Error opening db connection for running %s commands %d: %v", action, idx1, err)
+			return err
+		}
+		defer db.Close()
+		for idx2, command := range query.Commands {
+			if _, err := dbExec(ctx, db, command, query.ReadTimeout); err != nil {
+				log.Errorf("Error running %s command %d-%d: %v", action, idx1, idx2, err)
+				return nil
+			}
+		}
+	}
+	log.Info("%s done")
+	return nil
 }
 
 func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
