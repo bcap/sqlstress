@@ -40,8 +40,14 @@ func main() {
 	}
 
 	cfg := config.Default
-	err := config.ParseFilePath(context.Background(), args.Config, &cfg)
-	panicOnErr(err)
+	if err := config.ParseFilePath(context.Background(), args.Config, &cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse configuration: %s\n", err)
+		os.Exit(1)
+	}
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %s\n", err)
+		os.Exit(1)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -58,7 +64,7 @@ func main() {
 	}()
 
 	rn := runner.New(cfg)
-	err = rn.Run(ctx)
+	err := rn.Run(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		panicOnErr(err)
 	}
