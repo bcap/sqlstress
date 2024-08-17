@@ -36,7 +36,9 @@ func (r *Runner) OpenIdle(ctx context.Context) error {
 			idx1 := idx1
 			idx2 := idx2
 			group.Go(func() error {
-				sem.Acquire(gctx, 1)
+				if err := sem.Acquire(gctx, 1); err != nil {
+					return err
+				}
 				defer sem.Release(1)
 
 				db, err := r.openDB(gctx, idle.ConnectionConfig)
