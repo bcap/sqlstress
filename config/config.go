@@ -44,8 +44,8 @@ type Config struct {
 	RebuildConnWait        time.Duration `yaml:"rebuild-connection-wait-time"`
 	RebuildConnSplay       time.Duration `yaml:"rebuild-connection-splay-time"`
 	IdleConnMaxParallelism int           `yaml:"idle-connection-max-parallelism"`
-	IdleConnKeepAlive      time.Duration `yaml:"idle-connection-keep-alive-wait-time`
-	IdleConnKeepAliveSplay time.Duration `yaml:"idle-connection-keep-alive-splay-time`
+	IdleConnKeepAlive      time.Duration `yaml:"idle-connection-keep-alive-wait-time"`
+	IdleConnKeepAliveSplay time.Duration `yaml:"idle-connection-keep-alive-splay-time"`
 }
 
 type ConnectionConfig struct {
