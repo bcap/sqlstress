@@ -324,8 +324,14 @@ func logProgress(idx int, query config.LoadQuery, actualRate float64, ratePerCon
 		limitMsg = ", " + red("reached max")
 	}
 
+	// name
+	name := query.Name
+	if len(name) > 10 {
+		name = name[0:10]
+	}
+
 	log.Infof(
-		"Query #%d: %s/s (%.1f/s), avg rate per connection: %0.1f/s, avg latency: %0.1fms, connections: %d (%+d%s)",
-		idx, actualRateS, desiredRate, ratePerConnection, avgLatency/float64(time.Millisecond), connections, connectionTarget, limitMsg,
+		"Query #%d %-10s: %s/s (%.1f/s), avg rate per connection: %0.1f/s, avg latency: %0.1fms, connections: %d (%+d%s)",
+		idx, name, actualRateS, desiredRate, ratePerConnection, avgLatency/float64(time.Millisecond), connections, connectionTarget, limitMsg,
 	)
 }

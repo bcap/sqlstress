@@ -61,6 +61,7 @@ type Query struct {
 type LoadQuery struct {
 	Query `yaml:",inline"`
 
+	Name           string        `yaml:"name"`
 	RatePerSecond  float64       `yaml:"rate-per-second"`
 	RatePerMinute  float64       `yaml:"rate-per-minute"`
 	MaxConnections int           `yaml:"max-connections"`
