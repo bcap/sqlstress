@@ -1,10 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -25,6 +27,8 @@ var Default = Config{
 }
 
 type Config struct {
+	Import []string `yaml:"import"`
+
 	RunForSeconds     int64             `yaml:"run-for-seconds"`
 	Driver            string            `yaml:"driver"`
 	ConnectionStrings map[string]string `yaml:"connection-strings"`
@@ -226,7 +230,58 @@ func (v QueryVar) RandomWeights() []int {
 	return result
 }
 
-func Parse(ctx context.Context, reader io.Reader, config *Config) error {
+func ParseFilePath(ctx context.Context, filePath string, config *Config) error {
+	f, err := os.OpenFile(filePath, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(filePath)
+	return Parse(ctx, dir, f, config)
+}
+
+func Parse(ctx context.Context, dir string, reader io.Reader, config *Config) error {
+	b, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+
+	// parse and get import paths
+	if err := parse(ctx, bytes.NewReader(b), config); err != nil {
+		return err
+	}
+
+	// if there are imports
+	if len(config.Import) > 0 {
+
+		// we copy the imports and erase them to avoid recursion loops
+		imports := make([]string, len(config.Import))
+		copy(imports, config.Import)
+		config.Import = nil
+
+		// override config with all imported configs
+		for _, importPath := range imports {
+			if !filepath.IsAbs(importPath) {
+				importPath = filepath.Join(dir, importPath)
+			}
+
+			if err := ParseFilePath(ctx, importPath, config); err != nil {
+				return err
+			}
+		}
+
+		// final parse run to override imported configs
+		if err := parse(ctx, bytes.NewReader(b), config); err != nil {
+			return err
+		}
+	}
+
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parse(ctx context.Context, reader io.Reader, config *Config) error {
 	var err error
 
 	doneC := make(chan struct{})
@@ -242,14 +297,6 @@ func Parse(ctx context.Context, reader io.Reader, config *Config) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func ParseFilePath(ctx context.Context, filePath string, config *Config) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return err
-	}
-	return Parse(ctx, f, config)
 }
 
 func GenExample(writer io.Writer) error {
