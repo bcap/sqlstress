@@ -32,8 +32,8 @@ type Config struct {
 	RunForSeconds     int64             `yaml:"run-for-seconds"`
 	Driver            string            `yaml:"driver"`
 	ConnectionStrings map[string]string `yaml:"connection-strings"`
-	Setup             []Query           `yaml:"setup"`
-	TearDown          []Query           `yaml:"teardown"`
+	Setup             []PrePostQuery    `yaml:"setup"`
+	TearDown          []PrePostQuery    `yaml:"teardown"`
 	IdleConnections   []IdleConnection  `yaml:"idle-connections"`
 	Queries           []*LoadQuery      `yaml:"queries"`
 
@@ -64,6 +64,13 @@ type Query struct {
 	ReadTimeout time.Duration `yaml:"read-timeout"`
 	Commands    []string      `yaml:"commands"`
 }
+
+type PrePostQuery struct {
+	Query `yaml:",inline"`
+
+	Group string `yaml:"group"`
+}
+
 type LoadQuery struct {
 	Query `yaml:",inline"`
 
@@ -308,23 +315,27 @@ func GenExample(writer io.Writer) error {
 			"default": "user:password@tcp(localhost:3306)/database",
 		},
 		RunForSeconds: 1,
-		Setup: []Query{
+		Setup: []PrePostQuery{
 			{
-				ConnectionConfig: ConnectionConfig{
-					Connection: "default",
-				},
-				Commands: []string{
-					"create table if not exists test (id int primary key)",
+				Query: Query{
+					ConnectionConfig: ConnectionConfig{
+						Connection: "default",
+					},
+					Commands: []string{
+						"create table if not exists test (id int primary key)",
+					},
 				},
 			},
 		},
-		TearDown: []Query{
+		TearDown: []PrePostQuery{
 			{
-				ConnectionConfig: ConnectionConfig{
-					Connection: "default",
-				},
-				Commands: []string{
-					"drop table if exists test",
+				Query: Query{
+					ConnectionConfig: ConnectionConfig{
+						Connection: "default",
+					},
+					Commands: []string{
+						"drop table if exists test",
+					},
 				},
 			},
 		},
