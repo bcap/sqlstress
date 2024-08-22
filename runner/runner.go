@@ -13,6 +13,7 @@ import (
 	_ "github.com/lib/pq"              // PostgreSQL, driver: postgres
 
 	"github.com/bcap/sqlstress/config"
+	"github.com/bcap/sqlstress/control"
 	"github.com/bcap/sqlstress/log"
 )
 
@@ -20,7 +21,10 @@ var yellow = color.New(color.FgYellow).SprintFunc()
 var red = color.New(color.FgRed).SprintFunc()
 
 type Runner struct {
-	config            config.Config
+	config *config.Config
+
+	control *control.Server
+
 	throughput        []*atomic.Int32
 	latency           []*atomic.Int64
 	cancels           [][]context.CancelFunc
@@ -28,7 +32,7 @@ type Runner struct {
 	idleConnections   [][]*sql.DB
 }
 
-func New(config config.Config) *Runner {
+func New(config *config.Config) *Runner {
 	throughputs := make([]*atomic.Int32, len(config.Queries))
 	latency := make([]*atomic.Int64, len(config.Queries))
 	for idx := range throughputs {
@@ -37,6 +41,7 @@ func New(config config.Config) *Runner {
 	}
 	return &Runner{
 		config:     config,
+		control:    control.New(config),
 		throughput: throughputs,
 		latency:    latency,
 		cancels:    make([][]context.CancelFunc, len(config.Queries)),
@@ -60,23 +65,33 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.config.Print(log.InfoLogger.Writer())
 	}
 
+	if r.config.ControlServer {
+		go func() {
+			if err := r.control.Run(ctx); err != nil {
+				log.Errorf("Control server failed: %v", err)
+			}
+		}()
+	}
+
 	log.Infof("------")
 
 	// defer Teardown
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 		defer cancel()
-		r.TearDown(ctx)
+		if err := r.TearDown(ctx); err != nil {
+			log.Errorf("failed during tear down: %v", err)
+		}
 	}()
 
 	// Do the setup
 	if err := r.Setup(ctx); err != nil {
-		return err
+		return fmt.Errorf("failed during setup: %w", err)
 	}
 
 	// Open idle connections
 	if err := r.OpenIdle(ctx); err != nil {
-		return err
+		return fmt.Errorf("failed during opening idle connections: %w", err)
 	}
 	defer r.CloseIdle()
 

@@ -305,7 +305,7 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 	}
 }
 
-func logProgress(idx int, query config.LoadQuery, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
+func logProgress(idx int, query *config.LoadQuery, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
 	// rate coloring
 	desiredRate := query.Rate()
 	actualRateS := fmt.Sprintf("%.1f", actualRate)

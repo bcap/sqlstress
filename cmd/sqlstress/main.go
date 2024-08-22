@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -63,10 +62,9 @@ func main() {
 		cancel()
 	}()
 
-	rn := runner.New(cfg)
-	err := rn.Run(ctx)
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		panicOnErr(err)
+	rn := runner.New(&cfg)
+	if err := rn.Run(ctx); err != nil && ctx.Err() == nil {
+		log.Errorf("Runner failed: %v", err)
 	}
 }
 

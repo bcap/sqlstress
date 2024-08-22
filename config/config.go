@@ -35,7 +35,7 @@ type Config struct {
 	Setup             []Query           `yaml:"setup"`
 	TearDown          []Query           `yaml:"teardown"`
 	IdleConnections   []IdleConnection  `yaml:"idle-connections"`
-	Queries           []LoadQuery       `yaml:"queries"`
+	Queries           []*LoadQuery      `yaml:"queries"`
 
 	// variables to tune the sql load mechanism
 	CheckEverySeconds             float64 `yaml:"check-every-x-seconds"`
@@ -50,6 +50,8 @@ type Config struct {
 	IdleConnMaxParallelism int           `yaml:"idle-connection-max-parallelism"`
 	IdleConnKeepAlive      time.Duration `yaml:"idle-connection-keep-alive-wait-time"`
 	IdleConnKeepAliveSplay time.Duration `yaml:"idle-connection-keep-alive-splay-time"`
+	ControlServer          bool          `yaml:"control-server"`
+	ControlServerAddr      string        `yaml:"control-server-addr"`
 }
 
 type ConnectionConfig struct {
@@ -326,7 +328,7 @@ func GenExample(writer io.Writer) error {
 				},
 			},
 		},
-		Queries: []LoadQuery{
+		Queries: []*LoadQuery{
 			{
 				RatePerSecond:  1,
 				MaxConnections: 10,

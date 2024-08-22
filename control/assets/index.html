@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>sqlstress control</title>
+    <link rel="stylesheet" href="https://cdn.simplecss.org/simple.min.css">
+    <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<script>
+    function rate(queryIdx, delta) {
+        fetch(`/rate?query=${queryIdx}&delta=${delta}`)
+            .then(data => console.log(data))
+            .then(() => location.reload());
+    }
+</script>
+<body>
+    <h1>sqlstress control</h1>
+    <main>
+        <div>
+            {{ range $i, $q := .Config.Queries }}
+                <div class="query">
+                    <div class="text">
+                        <span>Query #<span>{{ $i }}</span></span>, 
+                        <span>name: <span>{{ $q.Name }}</span></span>, 
+                        <span>target: <span>{{ $q.RatePerSecond }}</span> qps</span>
+                    </div>
+                    <div class="rate buttons up">
+                        <button class="rate up" onclick="rate({{$i}}, 1)">+1</button>
+                        <button class="rate up" onclick="rate({{$i}}, 10)">+10</button>
+                        <button class="rate up" onclick="rate({{$i}}, 100)">+100</button>
+                        <button class="rate up" onclick="rate({{$i}}, 1000)">+1K</button>
+                    </div>
+                    <div class="rate buttons down">
+                        <button class="rate down" onclick="rate({{$i}}, -1)">-1</button>
+                        <button class="rate down" onclick="rate({{$i}}, -10)">-10</button>
+                        <button class="rate down" onclick="rate({{$i}}, -100)">-100</button>
+                        <button class="rate down" onclick="rate({{$i}}, -1000)">-1K</button>
+                    </div>
+                </div>
+            {{ end }}
+        </div>
+    </main>
+</body>
+</html>

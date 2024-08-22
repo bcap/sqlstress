@@ -1,0 +1,12 @@
+.query {
+    margin: .5rem;
+}
+
+button {
+    padding: .1rem;
+    margin-bottom: .4rem;
+}
+
+button.rate {
+    min-width: 60px;
+}
