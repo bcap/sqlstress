@@ -43,6 +43,7 @@ type Config struct {
 	AverageSamples                int     `yaml:"avg-samples"`
 	GrowthFactor                  float64 `yaml:"growth-factor"`
 	MaxConnectionDelta            int     `yaml:"max-connection-delta"`
+	StableNumChecks               int     `yaml:"stable-num-checks"`
 
 	// other tuneables
 	RebuildConnWait        time.Duration `yaml:"rebuild-connection-wait-time"`

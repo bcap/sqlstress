@@ -5,12 +5,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "rds-research",
+            "name": "simple",
             "type": "go",
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/sqlstress/",
-            "args": ["-c", "${workspaceFolder}/rds-research-config.yaml"]
+            "args": ["-c", "${workspaceFolder}/simple.yaml"]
+        },
+        {
+            "name": "rds-research - read",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/sqlstress/",
+            "args": ["-c", "/Users/bcap/code/github.com/vtex/bcap/db/rds-experiments/configs/reads.yaml"]
         }
     ]
 }

@@ -27,6 +27,7 @@ func (r *Runner) Stress(ctx context.Context) error {
 	averages := make([]float64, len(r.config.Queries))
 	throughputs := make([]int32, len(r.config.Queries))
 	latencies := make([]int64, len(r.config.Queries))
+	latestNumConnections := make([][]int, len(r.config.Queries))
 	adjustEvery := uint64(r.config.AdjustConnectionsEveryXChecks)
 
 	var checks uint64
@@ -72,30 +73,27 @@ func (r *Runner) Stress(ctx context.Context) error {
 				}
 			}
 
-			target := int(math.Round(goroutinesAdjustment))
-			if target > maxAdjustment {
-				target = maxAdjustment
-			} else if target < -maxAdjustment {
-				target = -maxAdjustment
+			delta := int(math.Round(goroutinesAdjustment))
+			if delta > maxAdjustment {
+				delta = maxAdjustment
+			} else if delta < -maxAdjustment {
+				delta = -maxAdjustment
 			}
 
 			// do not try to use more connections when we reach the max amount allowed
-			if query.MaxConnections > 0 && target > 0 && goroutines+target > query.MaxConnections {
-				target = query.MaxConnections - goroutines
+			if query.MaxConnections > 0 && delta > 0 && goroutines+delta > query.MaxConnections {
+				delta = query.MaxConnections - goroutines
 			}
 
-			avgLatency := float64(latencies[idx]) / throughput
-			logProgress(idx, query, ratePerSecond, ratePerGoroutine, avgLatency, goroutines, target)
-
 			if shouldAdjust {
-				if target > 0 {
-					for i := 0; i < target; i++ {
+				if delta > 0 {
+					for i := 0; i < delta; i++ {
 						childCtx, cancel := context.WithCancel(ctx)
 						r.cancels[idx] = append(r.cancels[idx], cancel)
 						go r.runQuery(childCtx, len(r.cancels[idx]), idx)
 					}
-				} else if target < 0 {
-					for i := 0; i < -target; i++ {
+				} else if delta < 0 {
+					for i := 0; i < -delta; i++ {
 						lastIdx := len(r.cancels[idx]) - 1
 						cancel := r.cancels[idx][lastIdx]
 						cancel()
@@ -104,6 +102,28 @@ func (r *Runner) Stress(ctx context.Context) error {
 				}
 			}
 
+			// calculate if we are stable by checking if the last iterations we had no change in number of connections
+			stable := true
+			if r.config.StableNumChecks > 0 {
+				stable = false
+				latestNumConnections[idx] = append(latestNumConnections[idx], len(r.cancels[idx]))
+				if len(latestNumConnections[idx]) > r.config.StableNumChecks {
+					latestNumConnections[idx] = latestNumConnections[idx][1:]
+				}
+				if len(latestNumConnections[idx]) == r.config.StableNumChecks {
+					stable = true
+					first := latestNumConnections[idx][0]
+					for _, nc := range latestNumConnections[idx] {
+						if nc != first {
+							stable = false
+							break
+						}
+					}
+				}
+			}
+
+			avgLatency := float64(latencies[idx]) / throughput
+			logProgress(idx, query, ratePerSecond, ratePerGoroutine, avgLatency, goroutines, delta, stable)
 		}
 
 		checks++
@@ -305,7 +325,7 @@ func (r *Runner) runQuery(ctx context.Context, id int, queryID int) error {
 	}
 }
 
-func logProgress(idx int, query *config.LoadQuery, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int) {
+func logProgress(idx int, query *config.LoadQuery, actualRate float64, ratePerConnection float64, avgLatency float64, connections int, connectionTarget int, stable bool) {
 	// rate coloring
 	desiredRate := query.Rate()
 	actualRateS := fmt.Sprintf("%.1f", actualRate)
@@ -330,8 +350,18 @@ func logProgress(idx int, query *config.LoadQuery, actualRate float64, ratePerCo
 		name = name[0:10]
 	}
 
+	// stableness
+	stableMarker := ""
+	if !stable {
+		stableMarker = "~"
+	}
+
 	log.Infof(
-		"Query #%d %-10s: %s/s (%.1f/s), avg rate per connection: %0.1f/s, avg latency: %0.1fms, connections: %d (%+d%s)",
-		idx, name, actualRateS, desiredRate, ratePerConnection, avgLatency/float64(time.Millisecond), connections, connectionTarget, limitMsg,
+		"Query #%d %-10s: %s/s (%.1f/s), avg rate per connection: %0.1f/s, avg latency: %0.1fms, connections: %d (%+d%s) %s",
+		idx, name, actualRateS, desiredRate,
+		ratePerConnection,
+		avgLatency/float64(time.Millisecond),
+		connections, connectionTarget, limitMsg,
+		stableMarker,
 	)
 }
