@@ -1,28 +1,57 @@
-# run-for-seconds: 5
-
-# db connection
+# run-for-seconds: 10 # default: run until process is killed
 driver: mysql
-dsn: USER:PASSWORD@tcp(MYSQL_ADDRESS:MYSQL_PORT)/MYSQL_SCHEMA
-
-# tuning the throughput mechanism
-check-every-seconds: 1.0
-growth-factor: 0.5
-max-connection-delta: 10
-avg-samples: 3
-
-# the actual queries to run against the db
+connection-strings:
+  default: USER:PASSWORD@tcp(MYSQL_ADDRESS:MYSQL_PORT)/MYSQL_SCHEMA
+setup:
+- connection: default
+  connect-timeout: 0s
+  read-timeout: 0s
+  commands:
+  - create table if not exists test (id int auto_increment primary key, name varchar(255))
+teardown:
+- connection: default
+  connect-timeout: 0s
+  read-timeout: 0s
+  commands:
+  - drop table if exists test
 queries:
-
-- rate-per-second: 300
-  max-connections: 200
+- connection: default
+  connect-timeout: 1s
+  read-timeout: 1s
+  commands:
+  - insert into test (name) values ('{{name}}')
+  rate-per-second: 1
+  rate-per-minute: 0
+  max-connections: 1
   sleep: 10ms
-  commands: 
-  - |
-    select * from table where id = 1
-
-- rate-per-second: 100
-  max-connections: 200
+  vars:
+    - key: name
+      values:
+        - value: 'foo'
+          weight: 1
+        - value: 'bar'
+          weight: 2
+  random-seed: 0
+- connection: default
+  connect-timeout: 1s
+  read-timeout: 1s
+  commands:
+  - select * from test where name = '{{name}}' limit 10
+  rate-per-second: 1
+  rate-per-minute: 0
+  max-connections: 1
   sleep: 10ms
-  commands: 
-  - |
-    replace into table (id, value) values (1, 'foo')
+  vars:
+    - key: name
+      value: 'foo'
+  random-seed: 0
+check-every-x-seconds: 1
+adjust-connections-on-every-x-checks: 1
+# avg-samples: 0 # default: 5
+# growth-factor: 0 # default: 0.8
+# max-connection-delta: 0 # default 1
+# rebuild-connection-wait-time: 0s # default 200ms
+# rebuild-connection-splay-time: 0s # default 100ms
+# idle-connection-max-parallelism: 0 # default 10
+# idleconnkeepalive: 0s # default 10s
+# idleconnkeepalivesplay: 0s # default 5s
