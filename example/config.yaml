@@ -1,0 +1,102 @@
+driver: postgres
+
+connection-strings:
+  write: host=localhost port=5432 user=testuser password=password dbname=testdb sslmode=disable
+  read: host=localhost port=5432 user=testuser password=password dbname=testdb sslmode=disable
+
+setup:
+- connection: write
+  commands:
+  - DROP TABLE IF EXISTS kv
+  - CREATE TABLE kv (key text PRIMARY KEY, value text, ts timestamp default now())
+  # populate with 1 million initial rows
+  - INSERT INTO kv(key, value) SELECT concat('t:', now()::text, ', r:', random()::text), 'initial' from generate_series(0, 1000 * 1000) as x;
+  - CREATE INDEX kv_ts_idx ON kv(ts)
+  - CREATE INDEX kv_value_idx ON kv(value)
+  - ANALYZE kv
+
+# simulating idle connections
+idle-connections:
+- connection: write
+  amount: 10
+
+queries:
+#
+# Keep writing data
+#
+- connection: write
+  name: insert
+  rate-per-second: 200
+  max-connections: 10
+  connect-timeout: 5s
+  read-timeout: 3s
+  sleep: 20ms
+  commands:
+  - INSERT INTO kv(key, value) VALUES (concat('t:', now()::text, ', r:', random()::text), '{{VALUE}}')
+  vars:
+  - key: VALUE
+    values:
+    - value: foo
+    - value: bar
+    - value: foz
+    - value: baz
+
+#
+# read some missing key (this will always return zero results, but generate load)
+#
+- connection: read
+  name: read_miss
+  rate-per-second: 500
+  max-connections: 20
+  connect-timeout: 5s
+  read-timeout: 3s
+  sleep: 20ms
+  commands:
+  - WITH vars as (SELECT cast(random() as text) as key) SELECT * from kv, vars where kv.key = vars.key
+
+#
+# read some existing keys
+#
+- connection: read
+  name: read_some
+  rate-per-second: 300
+  max-connections: 10
+  connect-timeout: 5s
+  read-timeout: 3s
+  sleep: 20ms
+  commands:
+  - SELECT * from kv limit 10
+
+#
+# read recent entries
+#
+- connection: read
+  name: read_recent
+  rate-per-second: 200
+  max-connections: 10
+  connect-timeout: 5s
+  read-timeout: 3s
+  sleep: 20ms
+  commands:
+  - SELECT * from kv where ts > now() - interval '1 second' limit 10
+
+#
+# tuning the throughput mechanism
+#
+check-every-x-seconds: 1.0
+adjust-connections-on-every-x-checks: 5
+growth-factor: 0.4
+max-connection-delta: 50
+avg-samples: 5
+stable-num-checks: 10
+
+#
+# other settings
+#
+control-server: true
+control-server-addr: localhost:8090
+rebuild-connection-wait-time: 100ms
+rebuild-connection-splay-time: 100ms
+idle-connection-max-parallelism: 20
+idle-connection-keep-alive-wait-time: 5s
+idle-connection-keep-alive-splay-time: 3s
